@@ -88,6 +88,50 @@ const scrubHarFile = (harData: any) => {
 };
 
 /**
+ * Generates a summary of the HAR entry if AI is available
+ * @param entry The HAR entry to summarize
+ * @returns The entry with summary information
+ */
+const summarizeEntry = async (entry: any, hasAI: boolean): Promise<any> => {
+  if (!hasAI) return entry;
+  
+  // TODO: Implement AI-powered summarization
+  return entry;
+};
+
+/**
+ * Performs smart scrubbing of sensitive data if AI is available
+ * @param entry The HAR entry to smart scrub
+ * @returns The smart scrubbed entry
+ */
+const smartScrubEntry = async (entry: any, hasAI: boolean): Promise<any> => {
+  if (!hasAI) return entry;
+  
+  // TODO: Implement AI-powered smart scrubbing
+  return entry;
+};
+
+/**
+ * Process a single HAR entry through the pipeline
+ * @param entry The HAR entry to process
+ * @param hasAI Whether AI features are available
+ * @returns The processed entry
+ */
+const processEntryThroughPipeline = async (entry: any, hasAI: boolean): Promise<any> => {
+  // Pipeline steps: summary -> smart scrub -> basic scrub
+  let processedEntry = entry;
+  
+  // Step 1: Summarize
+  processedEntry = await summarizeEntry(processedEntry, hasAI);
+  
+  // Step 2: Smart scrub
+  processedEntry = await smartScrubEntry(processedEntry, hasAI);
+  
+  // Step 3: Basic scrub (always runs)
+  return scrubSensitiveData(processedEntry);
+};
+
+/**
  * Checks if Chrome AI features are available in the worker context
  * @returns {Promise<boolean>} True if Chrome AI features are available
  */
@@ -135,11 +179,22 @@ self.addEventListener('message', async (e: MessageEvent) => {
   if (e.data.type === 'processHar' && e.data.harContent) {
     try {
       const harData = JSON.parse(e.data.harContent);
-      const scrubbedData = scrubHarFile(harData);
+      const hasAI = await checkChromeAIFeatures();
+      
+      // Process each entry through the pipeline
+      if (harData.log && harData.log.entries) {
+        const processedEntries = await Promise.all(
+          harData.log.entries.map((entry: any) => 
+            processEntryThroughPipeline(entry, hasAI)
+          )
+        );
+        
+        harData.log.entries = processedEntries;
+      }
       
       self.postMessage({
         type: 'success',
-        data: scrubbedData
+        data: harData
       });
     } catch (error) {
       self.postMessage({
