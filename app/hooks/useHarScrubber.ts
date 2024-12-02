@@ -32,7 +32,7 @@ export function useHarScrubber() {
     
     featureCheckWorker.onmessage = (e) => {
       if (e.data.type === 'featureCheck' && !e.data.hasFeatures) {
-        setWarning(e.data.message);
+        setWarning('This demo requires Chrome AI features which are not available in your environment.\n\n[Learn how to enable them](https://developer.chrome.com/docs/ai/built-in)');
       } else if (e.data.type === 'error') {
         setWarning('Error checking privacy features. Basic privacy protection will be applied.');
       }

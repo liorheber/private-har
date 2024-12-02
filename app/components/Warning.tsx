@@ -1,6 +1,7 @@
 'use client';
 
 import { motion, AnimatePresence } from 'framer-motion';
+import ReactMarkdown from 'react-markdown';
 
 interface WarningProps {
   message: string;
@@ -47,7 +48,7 @@ export default function Warning({ message, onClose }: WarningProps) {
               </svg>
             </motion.div>
             <div className="ml-3 flex-1">
-              <motion.p 
+              <motion.div 
                 className="text-sm text-yellow-700"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -56,8 +57,24 @@ export default function Warning({ message, onClose }: WarningProps) {
                   duration: 0.3
                 }}
               >
-                {message}
-              </motion.p>
+                <ReactMarkdown
+                  components={{
+                    a: ({ node, ...props }) => (
+                      <a
+                        {...props}
+                        className="text-blue-600 hover:text-blue-800 underline"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      />
+                    ),
+                    p: ({ node, ...props }) => (
+                      <p {...props} className="mb-2" />
+                    )
+                  }}
+                >
+                  {message}
+                </ReactMarkdown>
+              </motion.div>
             </div>
             <div className="ml-4 flex-shrink-0">
               <motion.button
