@@ -1,7 +1,19 @@
+import { motion } from 'framer-motion';
+
 export default function Introduction() {
   return (
-    <div className="max-w-3xl mx-auto py-8">
-      <div className="text-center mb-8">
+    <motion.div 
+      className="max-w-3xl mx-auto py-8"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.6, duration: 0.5 }}
+    >
+      <motion.div 
+        className="text-center mb-8"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.8, duration: 0.4 }}
+      >
         <h2 className="text-2xl font-semibold text-gray-500 mb-3">
           Private HAR Scrubbing with Local AI
         </h2>
@@ -9,10 +21,19 @@ export default function Introduction() {
           Securely scrub sensitive data from your HAR files using Chrome&apos;s Local AI model,
           ensuring your data never leaves your machine.
         </p>
-      </div>
+      </motion.div>
 
-      <div className="grid grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+      <motion.div 
+        className="grid grid-cols-2 gap-6"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 1, duration: 0.5 }}
+      >
+        <motion.div 
+          className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
+          whileHover={{ scale: 1.02 }}
+          transition={{ duration: 0.2 }}
+        >
           <div className="flex items-start">
             <div className="bg-blue-50 rounded-full p-2">
               <svg className="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -24,9 +45,13 @@ export default function Introduction() {
               <p className="text-sm text-gray-500 mt-1">All processing happens locally on your machine, ensuring your sensitive data stays with you.</p>
             </div>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+        <motion.div 
+          className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
+          whileHover={{ scale: 1.02 }}
+          transition={{ duration: 0.2 }}
+        >
           <div className="flex items-start">
             <div className="bg-green-50 rounded-full p-2">
               <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -38,9 +63,13 @@ export default function Introduction() {
               <p className="text-sm text-gray-500 mt-1">Uses AI to identify sensitive data beyond predefined patterns, providing smarter protection.</p>
             </div>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+        <motion.div 
+          className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
+          whileHover={{ scale: 1.02 }}
+          transition={{ duration: 0.2 }}
+        >
           <div className="flex items-start">
             <div className="bg-purple-50 rounded-full p-2">
               <svg className="w-5 h-5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -52,9 +81,13 @@ export default function Introduction() {
               <p className="text-sm text-gray-500 mt-1">No data transmission to external servers means zero risk of data interception.</p>
             </div>
           </div>
-        </div>
+        </motion.div>
 
-        <div className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+        <motion.div 
+          className="bg-white rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
+          whileHover={{ scale: 1.02 }}
+          transition={{ duration: 0.2 }}
+        >
           <div className="flex items-start">
             <div className="bg-orange-50 rounded-full p-2">
               <svg className="w-5 h-5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -66,8 +99,8 @@ export default function Introduction() {
               <p className="text-sm text-gray-500 mt-1">Contextually understands what should be scrubbed for comprehensive protection.</p>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </motion.div>
+      </motion.div>
+    </motion.div>
   );
 }

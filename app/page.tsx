@@ -28,12 +28,16 @@ export default function Home() {
       <div className="fixed top-6 right-6">
         <GitHubButton />
       </div>
+      
       <main className="flex-1 pb-24">
         <div className="p-24">
           <div className="w-full max-w-5xl mx-auto space-y-8">
             <Header />
-
-            <FileUpload onFileChange={handleFileChange} hasEntries={entries.length > 0} />
+            
+            <FileUpload 
+              onFileChange={handleFileChange} 
+              hasEntries={entries.length > 0} 
+            />
 
             {warning && (
               <div className="flex justify-center">
@@ -52,10 +56,12 @@ export default function Home() {
               <ProgressIndicator progress={progress} />
             )}
 
-            <ErrorDisplay message={error} />
+            {error && (
+              <ErrorDisplay message={error} />
+            )}
 
             {entries.length > 0 && !isProcessing && (
-              <ViewerContainer
+              <ViewerContainer 
                 entries={entries}
                 logs={logs}
                 totalSize={entries.reduce((sum: number, entry: any) => sum + (entry?.response?.content?.size || 0), 0)}
