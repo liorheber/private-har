@@ -1,3 +1,68 @@
+// Check AI capabilities and ensure models are ready
+async function checkAICapabilities() {
+  try {
+    const [languageCapabilities, summarizerCapabilities] = await Promise.all([
+      ai.languageModel.capabilities(),
+      ai.summarizer.capabilities()
+    ]);
+    
+    // Check if either model is not supported
+    if (languageCapabilities.available === "no" || summarizerCapabilities.available === "no") {
+      workerLog("AI capabilities not fully supported on this device");
+      return false;
+    }
+    
+    // If either model needs downloading
+    if (languageCapabilities.available === "after-download" || summarizerCapabilities.available === "after-download") {
+      workerLog("AI models need to be downloaded first");
+      
+      // Start the downloads and monitor progress
+      const [languageSession, summarizerSession] = await Promise.all([
+        ai.languageModel.create({
+          monitor(m) {
+            m.addEventListener("downloadprogress", e => {
+              const progress = Math.round((e.loaded / e.total) * 100);
+              workerLog(`Downloading language model: ${progress}%`);
+              postMessage({
+                type: 'aiModelDownloadProgress',
+                model: 'language',
+                progress
+              });
+            });
+          }
+        }),
+        ai.summarizer.create({
+          monitor(m) {
+            m.addEventListener("downloadprogress", e => {
+              const progress = Math.round((e.loaded / e.total) * 100);
+              workerLog(`Downloading summarizer model: ${progress}%`);
+              postMessage({
+                type: 'aiModelDownloadProgress',
+                model: 'summarizer',
+                progress
+              });
+            });
+          }
+        })
+      ]);
+      
+      workerLog("AI models downloaded successfully");
+      return true;
+    }
+    
+    // Both models are readily available
+    if (languageCapabilities.available === "readily" && summarizerCapabilities.available === "readily") {
+      workerLog("AI capabilities ready");
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    workerLog("Error checking AI capabilities:", error);
+    return false;
+  }
+}
+
 // Constants for sensitive data patterns
 const SENSITIVE_PATTERNS = {
   EMAIL: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
@@ -657,114 +722,13 @@ async function processEntryThroughPipeline(entry, hasAI, index, totalEntries) {
   return entry;
 }
 
-// Check if content should be scrubbed
-function shouldScrubContent(entry) {
-  const { request, response } = entry;
-  const contentType = response?.content?.mimeType?.toLowerCase() || '';
-  
-  // Static assets that should not be scrubbed
-  const preserveContentTypes = [
-    'text/css',
-    'text/javascript',
-    'application/javascript',
-    'image/',
-    'font/',
-    'audio/',
-    'video/',
-    'text/html',
-    '.css',
-    '.js',
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.svg',
-    '.woff',
-    '.woff2',
-    '.ttf',
-    '.eot'
-  ];
-  
-  // Don't scrub if it's a static asset
-  if (preserveContentTypes.some(pattern => 
-    contentType.includes(pattern) || request.url.toLowerCase().includes(pattern)
-  )) {
-    return false;
-  }
-  
-  // Scrub HTML and API responses
-  return contentType.includes('text/html') || isApiCall(entry);
-}
-
-// Basic scrub of an entry
-function basicScrubEntry(entry) {
-  try {
-    // Deep clone to avoid modifying original
-    entry = JSON.parse(JSON.stringify(entry));
-    
-    // Always scrub cookies and auth headers
-    entry.request.cookies = [];
-    entry.response.cookies = [];
-    
-    entry.request.headers = entry.request.headers.filter(header => {
-      const name = header.name.toLowerCase();
-      return !name.includes('cookie') && 
-             !name.includes('auth') && 
-             !name.includes('token') &&
-             !name.includes('key');
-    });
-    
-    entry.response.headers = entry.response.headers.filter(header => {
-      const name = header.name.toLowerCase();
-      return !name.includes('cookie') && 
-             !name.includes('auth') && 
-             !name.includes('token') &&
-             !name.includes('key');
-    });
-
-    // Only scrub content if needed
-    if (shouldScrubContent(entry)) {
-      // Scrub request content
-      if (entry.request.postData?.text) {
-        try {
-          const postData = JSON.parse(entry.request.postData.text);
-          entry.request.postData.text = JSON.stringify(scrubObject(postData));
-        } catch {
-          // If not JSON, apply basic scrubbing patterns
-          entry.request.postData.text = scrubText(entry.request.postData.text);
-        }
-      }
-      
-      // Scrub response content
-      if (entry.response.content?.text) {
-        const contentType = entry.response.content.mimeType?.toLowerCase() || '';
-        
-        if (contentType.includes('application/json')) {
-          try {
-            const content = JSON.parse(entry.response.content.text);
-            entry.response.content.text = JSON.stringify(scrubObject(content));
-          } catch {
-            entry.response.content.text = scrubText(entry.response.content.text);
-          }
-        } else if (contentType.includes('text/html')) {
-          entry.response.content.text = scrubText(entry.response.content.text);
-        }
-      }
-    } else {
-      workerLog(`Preserving content for non-scrubbed type: ${entry.request.url}`);
-    }
-    
-    return entry;
-  } catch (error) {
-    workerLog('Error in basicScrubEntry:', error);
-    return entry;
-  }
-}
-
 // Process HAR data
 async function processHarData(harData) {
   try {
-    workerLog('Starting HAR file processing');
+    // Check AI capabilities before processing
+    const hasAI = await checkAICapabilities();
+    
+    workerLog(`Starting HAR processing with${hasAI ? '' : 'out'} AI capabilities`);
     
     if (!harData.log || !harData.log.entries) {
       throw new Error('Invalid HAR file format');
@@ -773,10 +737,6 @@ async function processHarData(harData) {
     const totalEntries = harData.log.entries.length;
     self.postMessage({ type: 'init', totalEntries });
     workerLog(`Found ${totalEntries} entries to process`);
-
-    // Check for AI features
-    const hasAI = 'ai' in self && 'summarizer' in self.ai;
-    workerLog(`AI features available: ${hasAI}`);
 
     const CONCURRENT_LIMIT = 4;
     const entries = [...harData.log.entries];
@@ -1024,3 +984,107 @@ const defaultSensitiveFields = [
   "certificate",
   "signature"
 ];
+
+// Check if content should be scrubbed
+function shouldScrubContent(entry) {
+  const { request, response } = entry;
+  const contentType = response?.content?.mimeType?.toLowerCase() || '';
+  
+  // Static assets that should not be scrubbed
+  const preserveContentTypes = [
+    'text/css',
+    'text/javascript',
+    'application/javascript',
+    'image/',
+    'font/',
+    'audio/',
+    'video/',
+    'text/html',
+    '.css',
+    '.js',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.svg',
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.eot'
+  ];
+  
+  // Don't scrub if it's a static asset
+  if (preserveContentTypes.some(pattern => 
+    contentType.includes(pattern) || request.url.toLowerCase().includes(pattern)
+  )) {
+    return false;
+  }
+  
+  // Scrub HTML and API responses
+  return contentType.includes('text/html') || isApiCall(entry);
+}
+
+// Basic scrub of an entry
+function basicScrubEntry(entry) {
+  try {
+    // Deep clone to avoid modifying original
+    entry = JSON.parse(JSON.stringify(entry));
+    
+    // Always scrub cookies and auth headers
+    entry.request.cookies = [];
+    entry.response.cookies = [];
+    
+    entry.request.headers = entry.request.headers.filter(header => {
+      const name = header.name.toLowerCase();
+      return !name.includes('cookie') && 
+             !name.includes('auth') && 
+             !name.includes('token') &&
+             !name.includes('key');
+    });
+    
+    entry.response.headers = entry.response.headers.filter(header => {
+      const name = header.name.toLowerCase();
+      return !name.includes('cookie') && 
+             !name.includes('auth') && 
+             !name.includes('token') &&
+             !name.includes('key');
+    });
+
+    // Only scrub content if needed
+    if (shouldScrubContent(entry)) {
+      // Scrub request content
+      if (entry.request.postData?.text) {
+        try {
+          const postData = JSON.parse(entry.request.postData.text);
+          entry.request.postData.text = JSON.stringify(scrubObject(postData));
+        } catch {
+          // If not JSON, apply basic scrubbing patterns
+          entry.request.postData.text = scrubText(entry.request.postData.text);
+        }
+      }
+      
+      // Scrub response content
+      if (entry.response.content?.text) {
+        const contentType = entry.response.content.mimeType?.toLowerCase() || '';
+        
+        if (contentType.includes('application/json')) {
+          try {
+            const content = JSON.parse(entry.response.content.text);
+            entry.response.content.text = JSON.stringify(scrubObject(content));
+          } catch {
+            entry.response.content.text = scrubText(entry.response.content.text);
+          }
+        } else if (contentType.includes('text/html')) {
+          entry.response.content.text = scrubText(entry.response.content.text);
+        }
+      }
+    } else {
+      workerLog(`Preserving content for non-scrubbed type: ${entry.request.url}`);
+    }
+    
+    return entry;
+  } catch (error) {
+    workerLog('Error in basicScrubEntry:', error);
+    return entry;
+  }
+}
