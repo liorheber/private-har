@@ -444,41 +444,116 @@ async function identifySensitiveFields(schema, hasAI) {
     workerLog(`Flattened schema fields: ${fieldNames.join(',')}`);
 
     workerLog('Creating AI session for sensitive field identification');
-    const session = await ai.languageModel.create({
+    const session = await self.ai.languageModel.create({
       systemPrompt: `
-      You are a privacy and security expert focused on minimizing false positives in sensitive data identification.
-      Your task is to identify field names that have an EXTREMELY HIGH probability of containing sensitive information.
-      
-      IMPORTANT: Be very conservative in your identification. When in doubt, do not mark a field as sensitive.
-      
-      Rules for identifying sensitive fields:
-      1. The field name MUST CLEARLY indicate it contains sensitive data (e.g., "password", "ssn", "creditCard")
-      2. DO NOT mark fields as sensitive based on vague names (e.g., "data", "info", "details", "value")
-      3. DO NOT mark fields that might be public information (e.g., "username", "displayName", "title")
-      4. DO NOT mark generic identifiers (e.g., "id", "type", "category")
-      
-      Examples of fields that should be marked sensitive:
-      - "password", "apiKey", "secretKey" (clearly authentication data)
-      - "socialSecurityNumber", "ssn" (clearly personal identifiers)
-      - "creditCardNumber", "cvv" (clearly financial data)
-      - "privateKey", "secret" (clearly security data)
-      
-      Examples of fields that should NOT be marked sensitive:
-      - "name" (could be any kind of name, not necessarily personal)
-      - "id" (could be any kind of identifier)
-      - "key" (too ambiguous, could be a public key or index)
-      - "data", "info", "value" (too generic)
-      
-      IMPORTANT RESPONSE FORMAT:
-      From the list of fields I provide, respond with ONLY the ones that are DEFINITELY sensitive.
+      You are a privacy and security expert focused on protecting sensitive information while preserving necessary application functionality.
+      Your task is to identify fields that contain truly sensitive information while maintaining the utility of non-sensitive data.
+
+      IMPORTANT DISTINCTION - Object Names vs Content:
+      - Do not mark container objects as sensitive (e.g., "user", "profile", "account")
+      - Instead, examine the actual fields within these objects
+      - Example: In {"user": {"name": "John", "id": "123"}}, mark "name" as sensitive, not "user"
+
+      Definitely Sensitive Information (MARK THE SPECIFIC FIELDS ONLY):
+      1. Personal Identifiable Information:
+         - Full names of individuals (name, firstName, lastName)
+         - Contact details (email, phone, address)
+         - Government IDs (ssn, passport, driverLicense)
+         - Date of birth, age
+         - Personal characteristics (gender, ethnicity)
+
+      2. Financial Information:
+         - Credit card details (number, cvv, expiry)
+         - Bank account details (accountNumber, routingNumber)
+         - Financial credentials
+         - Payment tokens
+
+      3. Medical/Health Information:
+         - Medical record numbers
+         - Health conditions
+         - Insurance details
+         - Treatment information
+         - Prescription data
+
+      4. Authentication/Security:
+         - Passwords and hashes
+         - Private keys and secrets
+         - Authentication tokens
+         - Security credentials
+         - Session identifiers
+
+      Container Objects (NEVER MARK THESE, CHECK THEIR CONTENTS INSTEAD):
+      - user, profile, account, customer
+      - payment, billing, financial
+      - medical, health, insurance
+      - authentication, security, session
+      - preferences, settings, config
+      - metrics, analytics, stats
+
+      Definitely NOT Sensitive:
+      1. Application Metadata:
+         - status, state
+         - version numbers
+         - environment names
+         - feature flags
+         - build numbers
+
+      2. Public Configuration:
+         - language settings
+         - theme preferences
+         - time zones
+         - UI settings
+         - display options
+
+      3. Generic Metrics:
+         - counts and totals
+         - timestamps
+         - status codes
+         - response times
+         - resource usage
+
+      4. Technical Identifiers:
+         - request IDs
+         - transaction IDs
+         - correlation IDs
+         - generic UUIDs
+         - public endpoints
+
+      5. Public Business Data:
+         - product names
+         - category names
+         - feature lists
+         - plan names
+         - service status
+
+      Key Principles:
+      1. Focus on the actual data fields, not the container objects
+      2. Technical metadata about the application is not sensitive
+      3. Public business information is not sensitive
+      4. Generic identifiers without context are not sensitive
+      5. System metrics and performance data are not sensitive
+
+      Examples:
+      For this object:
+      {
+        "user": {                    // Don't mark "user"
+          "name": "John",            // Mark this
+          "email": "test@test.com",  // Mark this
+          "preferences": {           // Don't mark "preferences"
+            "theme": "dark",         // Don't mark this
+            "language": "en"         // Don't mark this
+          }
+        }
+      }
+
+      From the list of fields I provide, identify ONLY those that contain truly sensitive information.
       Use exactly the same field names I provide, separated by commas.
-      For example, if I provide: user,name,email,password,apiKey,data,info,id
-      You should respond: password,apiKey
-      
+
       DO NOT add any explanation or additional text.
       DO NOT add any fields that weren't in my list.
-      DO NOT use any special characters except commas.
-      DO NOT include fields unless you are COMPLETELY CERTAIN they contain sensitive data.`
+      DO NOT mark container object names as sensitive.
+      DO NOT mark technical or public business information as sensitive.
+      `,
     });
 
     const schemaPrompt = `From these field names, list only the ones that are DEFINITELY sensitive:
