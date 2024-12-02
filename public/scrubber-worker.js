@@ -261,7 +261,7 @@ async function smartScrubEntry(entry, hasAI) {
 }
 
 // Process a single entry through the pipeline
-async function processEntryThroughPipeline(entry, hasAI) {
+async function processEntryThroughPipeline(entry, hasAI, index, totalEntries) {
   workerLog(`Starting pipeline for ${entry.request.url} with AI: ${hasAI}`);
   
   // Step 1: Summarize
@@ -403,28 +403,55 @@ async function processHarData(harData) {
     const hasAI = 'ai' in self && 'summarizer' in self.ai;
     workerLog(`AI features available: ${hasAI}`);
 
-    // Process entries one by one and send updates
-    for (let i = 0; i < harData.log.entries.length; i++) {
-      let entry = harData.log.entries[i];
+    const CONCURRENT_LIMIT = 5;
+    const entries = [...harData.log.entries];
+    const results = new Array(totalEntries);
+    let currentIndex = 0;
+    let completedCount = 0;
+
+    // Process entries in batches of CONCURRENT_LIMIT
+    async function processNextBatch() {
+      const batch = [];
       
-      // Process through pipeline
-      entry = await processEntryThroughPipeline(entry, hasAI);
-      
-      // Send the processed entry immediately
-      self.postMessage({ 
-        type: 'entry',
-        entry,
-        index: i,
-        total: totalEntries
-      });
-      
-      // Also send progress update
-      self.postMessage({ 
-        type: 'progress', 
-        current: i + 1, 
-        total: totalEntries 
-      });
+      while (batch.length < CONCURRENT_LIMIT && currentIndex < totalEntries) {
+        const entryIndex = currentIndex;
+        batch.push(
+          processEntryThroughPipeline(entries[entryIndex], hasAI, entryIndex, totalEntries)
+            .then(result => {
+              results[entryIndex] = result;
+              completedCount++;
+              
+              // Send the processed entry
+              self.postMessage({ 
+                type: 'entry',
+                entry: result,
+                index: entryIndex,
+                total: totalEntries
+              });
+
+              // Send progress update based on actual completion count
+              self.postMessage({ 
+                type: 'progress', 
+                current: completedCount, 
+                total: totalEntries 
+              });
+
+              // If there are more entries to process, add them to the queue
+              if (currentIndex < totalEntries) {
+                return processNextBatch();
+              }
+            })
+        );
+        currentIndex++;
+      }
+
+      if (batch.length > 0) {
+        await Promise.all(batch);
+      }
     }
+
+    // Start initial batch processing
+    await processNextBatch();
 
     // Send completion message
     self.postMessage({ 
