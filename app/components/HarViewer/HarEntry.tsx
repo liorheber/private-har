@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { formatBytes, formatDuration, formatDate, getRequestType } from './utils';
+import { formatBytes, formatDuration, getRequestType } from './utils';
+import ReactMarkdown from 'react-markdown';
 
 interface HarEntryProps {
   entry: {
@@ -95,17 +96,19 @@ export default function HarEntry({ entry, index }: HarEntryProps) {
       {isExpanded && (
         <div className="border-t border-gray-200 p-4">
           <div className="space-y-6">
-            {/* Summary */}
+            {/* Summary if available */}
             {entry.summary && (
-              <section>
-                <h3 className="text-lg font-medium mb-2">Summary</h3>
-                <p className="text-sm text-gray-700">{entry.summary}</p>
-              </section>
+              <div className="mt-4">
+                <h4 className="text-sm font-semibold mb-2">Summary:</h4>
+                <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded">
+                  <ReactMarkdown>{entry.summary}</ReactMarkdown>
+                </div>
+              </div>
             )}
 
             {/* General Info */}
             <section>
-              <h3 className="text-lg font-medium mb-2">General</h3>
+              <h3 className="text-lg font-medium mb-2">General Information</h3>
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p><span className="font-medium">Request URL:</span> {request.url}</p>
@@ -114,7 +117,8 @@ export default function HarEntry({ entry, index }: HarEntryProps) {
                   <p><span className="font-medium">Request Type:</span> <span className={requestTypeColor}>{requestType}</span></p>
                 </div>
                 <div>
-                  <p><span className="font-medium">Started:</span> {formatDate(entry.startedDateTime)}</p>
+                  <p className="font-medium">Started:</p>
+                  <p className="text-gray-600">{new Date(entry.startedDateTime).toLocaleString()}</p>
                   <p><span className="font-medium">Total Time:</span> {formatDuration(entry.time)}</p>
                   <p><span className="font-medium">Size:</span> {formatBytes(response.content.size)}</p>
                   <p><span className="font-medium">Content Type:</span> {response.content.mimeType}</p>

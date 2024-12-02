@@ -228,20 +228,17 @@ async function summarizeEntry(entry, hasAI) {
         content += `\nResponse body: ${entry.response.content.text}`;
       }
     }
-    
-    workerLog('Content for summarization:', content);
-    
+        
     // Create summarizer with shared context
     const summarizer = await self.ai.summarizer.create({
-      sharedContext: "JSON API request from HAR file",
-      type: "headline",
+      sharedContext: "Summarize an http call explaining what it is the call is doing based on the request and response body when it's available.",
+      type: "key-points",
+      format: "markdown",
       length: "short"
     });
     
     // Generate summary with specific context
-    const summary = await summarizer.summarize(content, {
-      context: `HTTP ${entry.request.method} API call made at ${entry.startedDateTime} with ${entry.response.status} response status`
-    });
+    const summary = await summarizer.summarize(content);
     
     entry.summary = summary.trim();
     workerLog(`Generated summary for API call: ${entry.summary}`);
