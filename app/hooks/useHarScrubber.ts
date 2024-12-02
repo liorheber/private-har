@@ -117,6 +117,36 @@ export function useHarScrubber() {
     }
   };
 
+  const downloadScrubbed = () => {
+    if (entries.length === 0) return;
+    
+    // Create a clean HAR object without summary and schema
+    const cleanEntries = entries.map(entry => {
+      const { summary, schema, ...cleanEntry } = entry;
+      return cleanEntry;
+    });
+
+    const cleanHar = {
+      log: {
+        version: harInfo?.version || '1.2',
+        creator: harInfo?.creator || {},
+        browser: harInfo?.browser || {},
+        pages: harInfo?.pages || [],
+        entries: cleanEntries
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(cleanHar, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'scrubbed.har';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return {
     entries,
     logs,
@@ -126,6 +156,7 @@ export function useHarScrubber() {
     warning,
     harInfo,
     handleFileChange,
-    setWarning
+    setWarning,
+    downloadScrubbed
   };
 }

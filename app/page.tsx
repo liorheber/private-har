@@ -20,7 +20,8 @@ export default function Home() {
     progress,
     warning,
     handleFileChange,
-    setWarning
+    setWarning,
+    downloadScrubbed
   } = useHarScrubber();
 
   return (
@@ -37,6 +38,8 @@ export default function Home() {
             <FileUpload 
               onFileChange={handleFileChange} 
               hasEntries={entries.length > 0} 
+              onDownload={downloadScrubbed}
+              isProcessing={isProcessing}
             />
 
             {warning && (
