@@ -325,7 +325,37 @@ async function smartScrubEntry(entry, hasAI) {
   if (!hasAI) return entry;
   
   workerLog(`Smart scrubbing entry: ${entry.request.url}`);
-  // TODO: Implement AI-powered smart scrubbing
+  
+  // Only process JSON responses
+  const contentType = entry.response.content.mimeType;
+  if (!isSummarizableContentType(contentType)) {
+    return entry;
+  }
+  
+  try {
+    const responseBody = entry.response.content.text;
+    if (!responseBody) return entry;
+    
+    const jsonData = JSON.parse(responseBody);
+    const schema = generateJsonSchema(jsonData);
+    
+    // Store the schema in the entry for further processing
+    entry.response.content.schema = schema;
+    
+    // Format the schema as a readable string
+    const formattedSchema = JSON.stringify(schema, null, 2);
+    
+    // Add schema to the response summary
+    if (!entry.response.content.summary) {
+      entry.response.content.summary = {};
+    }
+    entry.response.content.summary.schema = formattedSchema;
+    
+    workerLog('Generated JSON schema for response', { url: entry.request.url, schema });
+  } catch (error) {
+    workerLog(`Error processing JSON response: ${error.message}`, { url: entry.request.url });
+  }
+  
   return entry;
 }
 
@@ -577,3 +607,89 @@ self.onmessage = async function(e) {
     });
   }
 };
+
+// Generate JSON schema from a JSON object
+function generateJsonSchema(obj) {
+  if (obj === null) return { type: 'null' };
+  
+  if (Array.isArray(obj)) {
+    // For arrays, analyze all items to create a unified schema
+    if (obj.length === 0) return { type: 'array', items: {} };
+    
+    // First, generate schemas for all items
+    const itemSchemas = obj.map(item => generateJsonSchema(item));
+    
+    // Then merge all properties from all items
+    const mergedSchema = itemSchemas.reduce((acc, schema) => {
+      if (schema.type === 'object' && schema.properties) {
+        // For each property in the current schema
+        Object.entries(schema.properties).forEach(([key, value]) => {
+          if (!acc.properties[key]) {
+            // If property doesn't exist in accumulator, add it
+            acc.properties[key] = value;
+          } else {
+            // If property exists, merge its type information
+            const existingType = acc.properties[key].type;
+            const newType = value.type;
+            if (existingType !== newType) {
+              // If types differ, make it a union type
+              acc.properties[key].type = Array.isArray(existingType) 
+                ? [...new Set([...existingType, newType])]
+                : [existingType, newType];
+            }
+            // Merge formats if they exist
+            if (value.format && !acc.properties[key].format) {
+              acc.properties[key].format = value.format;
+            }
+          }
+        });
+      }
+      return acc;
+    }, { type: 'object', properties: {} });
+    
+    return {
+      type: 'array',
+      items: mergedSchema
+    };
+  }
+  
+  const type = typeof obj;
+  
+  switch (type) {
+    case 'object':
+      const properties = {};
+      for (const [key, value] of Object.entries(obj)) {
+        properties[key] = generateJsonSchema(value);
+      }
+      return {
+        type: 'object',
+        properties
+      };
+      
+    case 'string':
+      // Try to identify string formats
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(obj)) {
+        return { type: 'string', format: 'date-time' };
+      }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(obj)) {
+        return { type: 'string', format: 'date' };
+      }
+      if (/^[^@]+@[^@]+\.[^@]+$/.test(obj)) {
+        return { type: 'string', format: 'email' };
+      }
+      if (/^(https?:\/\/)/.test(obj)) {
+        return { type: 'string', format: 'uri' };
+      }
+      return { type: 'string' };
+      
+    case 'number':
+      // Identify number format (integer vs float)
+      return Number.isInteger(obj) ? { type: 'integer' } : { type: 'number' };
+      
+    case 'boolean':
+      return { type: 'boolean' };
+      
+    default:
+      return { type: 'unknown' };
+  }
+}

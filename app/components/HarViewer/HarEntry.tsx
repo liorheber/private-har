@@ -27,6 +27,9 @@ interface HarEntryProps {
         size: number;
         mimeType: string;
         text?: string;
+        summary?: {
+          schema?: string;
+        };
       };
     };
     timings: {
@@ -186,6 +189,18 @@ export default function HarEntry({ entry, index }: HarEntryProps) {
                 <div className="bg-gray-50 p-4 rounded overflow-x-auto">
                   <pre className="text-sm">
                     {response.content.text}
+                  </pre>
+                </div>
+              </section>
+            )}
+
+            {/* Response Schema */}
+            {response.content.summary?.schema && (
+              <section>
+                <h3 className="text-lg font-medium mb-2">Response Schema</h3>
+                <div className="bg-gray-50 p-4 rounded overflow-x-auto">
+                  <pre className="text-sm font-mono">
+                    {response.content.summary.schema}
                   </pre>
                 </div>
               </section>
