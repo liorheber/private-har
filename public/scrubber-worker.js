@@ -320,43 +320,243 @@ async function summarizeEntry(entry, hasAI) {
   }
 }
 
+// Queue for smart scrubbing tasks
+let scrubQueue = [];
+let scrubQueuePromise = null;
+
+// Process the scrub queue in batches
+async function processScrubQueue() {
+  if (scrubQueuePromise) return scrubQueuePromise;
+  
+  scrubQueuePromise = (async () => {
+    while (scrubQueue.length > 0) {
+      const batch = scrubQueue.splice(0, 4);
+      await Promise.all(batch.map(async ({ entry, resolve, reject }) => {
+        try {
+          const result = await processSmartScrub(entry);
+          resolve(result);
+        } catch (error) {
+          reject(error);
+        }
+      }));
+    }
+    scrubQueuePromise = null;
+  })();
+  
+  return scrubQueuePromise;
+}
+
+// Process a single entry for smart scrubbing
+async function processSmartScrub(entry) {
+  try {
+    // Only process JSON responses
+    const contentType = entry.response.content.mimeType;
+    if (!isSummarizableContentType(contentType)) {
+      workerLog(`Skipping non-JSON content type: ${contentType} for ${entry.request.url}`);
+      return entry;
+    }
+
+    // Ensure we have response body text
+    const responseBody = entry.response.content.text;
+    if (!responseBody) {
+      workerLog(`Skipping empty response body for ${entry.request.url}`);
+      return entry;
+    }
+
+    // Parse the JSON response
+    const jsonData = JSON.parse(responseBody);
+    workerLog(`Processing JSON response for ${entry.request.url}`);
+    
+    // Generate schema for the JSON data
+    const schema = generateJsonSchema(jsonData);
+    workerLog(`Generated schema for ${entry.request.url}: ${JSON.stringify(schema)}`);
+    
+    // Identify sensitive fields using AI
+    const sensitiveKeys = await identifySensitiveFields(schema, true);
+    workerLog(`AI identified sensitive keys for ${entry.request.url}: ${sensitiveKeys.join(', ')}`);
+    
+    if (!sensitiveKeys || sensitiveKeys.length === 0) {
+      workerLog(`No sensitive fields identified for ${entry.request.url}`);
+      return entry;
+    }
+    
+    // Create a deep copy of the entry to modify
+    const scrubbedEntry = JSON.parse(JSON.stringify(entry));
+    
+    // Update the response content with scrubbed data
+    const scrubbedData = JSON.parse(JSON.stringify(jsonData));
+    
+    // Function to recursively scrub objects
+    function scrubObject(obj) {
+      if (!obj || typeof obj !== 'object') return;
+      
+      for (const key in obj) {
+        const value = obj[key];
+        const keyLower = key.toLowerCase();
+        
+        // Check if this key matches any of our sensitive keys
+        if (sensitiveKeys.some(sensitive => keyLower.includes(sensitive.toLowerCase()))) {
+          if (typeof value === 'string') {
+            obj[key] = '[SCRUBBED]';
+            workerLog(`Using Smart Scrub on ${key} (string) for request ${entry.request.url}`);
+          } else if (typeof value === 'number') {
+            obj[key] = 0;
+            workerLog(`Using Smart Scrub on ${key} (number) for request ${entry.request.url}`);
+          } else if (Array.isArray(value)) {
+            obj[key] = [];
+            workerLog(`Using Smart Scrub on ${key} (array) for request ${entry.request.url}`);
+          } else if (typeof value === 'object') {
+            obj[key] = {};
+            workerLog(`Using Smart Scrub on ${key} (object) for request ${entry.request.url}`);
+          }
+        } else if (typeof value === 'object') {
+          // Recursively check nested objects and arrays
+          scrubObject(value);
+        }
+      }
+    }
+    
+    // Scrub the data recursively
+    scrubObject(scrubbedData);
+    
+    // Update the entry with scrubbed data
+    scrubbedEntry.response.content.text = JSON.stringify(scrubbedData);
+    
+    return scrubbedEntry;
+  } catch (error) {
+    console.warn('Smart scrubbing failed', error);
+    workerLog(`Smart scrubbing failed for ${entry.request.url}: ${error.message}`);
+    return entry;
+  }
+}
+
+// Identify sensitive fields in a schema that should be scrubbed
+async function identifySensitiveFields(schema, hasAI) {
+  if (!hasAI) {
+    workerLog('AI not available, falling back to default sensitive fields');
+    return defaultSensitiveFields;
+  }
+
+  try {
+    // Flatten the schema and get unique field names
+    const flattenedFields = flattenSchema(schema);
+    const fieldNames = getFieldNames(flattenedFields);
+    workerLog(`Flattened schema fields: ${fieldNames.join(',')}`);
+
+    workerLog('Creating AI session for sensitive field identification');
+    const session = await ai.languageModel.create({
+      systemPrompt: `
+      You are a privacy and security expert focused on minimizing false positives in sensitive data identification.
+      Your task is to identify field names that have an EXTREMELY HIGH probability of containing sensitive information.
+      
+      IMPORTANT: Be very conservative in your identification. When in doubt, do not mark a field as sensitive.
+      
+      Rules for identifying sensitive fields:
+      1. The field name MUST CLEARLY indicate it contains sensitive data (e.g., "password", "ssn", "creditCard")
+      2. DO NOT mark fields as sensitive based on vague names (e.g., "data", "info", "details", "value")
+      3. DO NOT mark fields that might be public information (e.g., "username", "displayName", "title")
+      4. DO NOT mark generic identifiers (e.g., "id", "type", "category")
+      
+      Examples of fields that should be marked sensitive:
+      - "password", "apiKey", "secretKey" (clearly authentication data)
+      - "socialSecurityNumber", "ssn" (clearly personal identifiers)
+      - "creditCardNumber", "cvv" (clearly financial data)
+      - "privateKey", "secret" (clearly security data)
+      
+      Examples of fields that should NOT be marked sensitive:
+      - "name" (could be any kind of name, not necessarily personal)
+      - "id" (could be any kind of identifier)
+      - "key" (too ambiguous, could be a public key or index)
+      - "data", "info", "value" (too generic)
+      
+      IMPORTANT RESPONSE FORMAT:
+      From the list of fields I provide, respond with ONLY the ones that are DEFINITELY sensitive.
+      Use exactly the same field names I provide, separated by commas.
+      For example, if I provide: user,name,email,password,apiKey,data,info,id
+      You should respond: password,apiKey
+      
+      DO NOT add any explanation or additional text.
+      DO NOT add any fields that weren't in my list.
+      DO NOT use any special characters except commas.
+      DO NOT include fields unless you are COMPLETELY CERTAIN they contain sensitive data.`
+    });
+
+    const schemaPrompt = `From these field names, list only the ones that are DEFINITELY sensitive:
+    ${fieldNames.join(',')}`;
+
+    workerLog('Sending field names to AI for analysis');
+    const result = await session.prompt(schemaPrompt);
+    workerLog(`Raw AI response: ${result}`);
+    
+    // Split the comma-separated response and clean it up
+    const sensitiveKeys = result
+      .split(',')
+      .map(key => key.trim().toLowerCase())
+      .filter(key => key.length > 0 && fieldNames.some(field => field.toLowerCase() === key));
+    
+    if (sensitiveKeys.length > 0) {
+      workerLog(`AI successfully identified ${sensitiveKeys.length} sensitive keys: ${sensitiveKeys.join(', ')}`);
+      return sensitiveKeys;
+    }
+    
+    workerLog('No valid keys found in AI response, falling back to defaults');
+    return defaultSensitiveFields;
+    
+  } catch (error) {
+    workerLog(`AI processing failed: ${error.message}`);
+    workerLog('Stack trace:', error.stack);
+    workerLog('Falling back to default sensitive fields');
+    return defaultSensitiveFields;
+  }
+}
+
+// Flatten a JSON schema into a list of field names
+function flattenSchema(schema, prefix = '') {
+  const fields = new Set();
+  
+  if (!schema || typeof schema !== 'object') return fields;
+  
+  // Add the current field name if we have a prefix
+  if (prefix) {
+    fields.add(prefix);
+  }
+  
+  // If this is an object with properties, process each property
+  if (schema.type === 'object' && schema.properties) {
+    for (const [key, value] of Object.entries(schema.properties)) {
+      const newPrefix = prefix ? `${prefix}.${key}` : key;
+      const nestedFields = flattenSchema(value, newPrefix);
+      nestedFields.forEach(field => fields.add(field));
+    }
+  }
+  
+  // If this is an array with items, process the items schema
+  if (schema.type === 'array' && schema.items) {
+    const nestedFields = flattenSchema(schema.items, prefix);
+    nestedFields.forEach(field => fields.add(field));
+  }
+  
+  return fields;
+}
+
+// Extract just the field names from a dot-notation path
+function getFieldNames(fields) {
+  const names = new Set();
+  for (const field of fields) {
+    // Split on dots and add each part
+    field.split('.').forEach(part => names.add(part));
+  }
+  return Array.from(names);
+}
+
 // Smart scrub entry using AI features if available
 async function smartScrubEntry(entry, hasAI) {
   if (!hasAI) return entry;
-  
-  workerLog(`Smart scrubbing entry: ${entry.request.url}`);
-  
-  // Only process JSON responses
-  const contentType = entry.response.content.mimeType;
-  if (!isSummarizableContentType(contentType)) {
-    return entry;
-  }
-  
-  try {
-    const responseBody = entry.response.content.text;
-    if (!responseBody) return entry;
-    
-    const jsonData = JSON.parse(responseBody);
-    const schema = generateJsonSchema(jsonData);
-    
-    // Store the schema in the entry for further processing
-    entry.response.content.schema = schema;
-    
-    // Format the schema as a readable string
-    const formattedSchema = JSON.stringify(schema, null, 2);
-    
-    // Add schema to the response summary
-    if (!entry.response.content.summary) {
-      entry.response.content.summary = {};
-    }
-    entry.response.content.summary.schema = formattedSchema;
-    
-    workerLog('Generated JSON schema for response', { url: entry.request.url, schema });
-  } catch (error) {
-    workerLog(`Error processing JSON response: ${error.message}`, { url: entry.request.url });
-  }
-  
-  return entry;
+
+  return new Promise((resolve, reject) => {
+    scrubQueue.push({ entry, resolve, reject });
+    processScrubQueue().catch(reject);
+  });
 }
 
 // Process a single entry through the pipeline
@@ -693,3 +893,59 @@ function generateJsonSchema(obj) {
       return { type: 'unknown' };
   }
 }
+
+// Default list of sensitive fields to scrub when AI is not available
+const defaultSensitiveFields = [
+  "name",
+  "email",
+  "phone",
+  "phoneNumber",
+  "password",
+  "token",
+  "apiKey",
+  "secret",
+  "accessToken",
+  "refreshToken",
+  "authorization",
+  "auth",
+  "key",
+  "ssn",
+  "socialSecurity",
+  "creditCard",
+  "cardNumber",
+  "cvv",
+  "address",
+  "location",
+  "gps",
+  "coordinates",
+  "latitude",
+  "longitude",
+  "ip",
+  "ipAddress",
+  "personalId",
+  "userId",
+  "username",
+  "sessionId",
+  "deviceId",
+  "fingerprint",
+  "biometric",
+  "dob",
+  "birthDate",
+  "birthDay",
+  "age",
+  "gender",
+  "race",
+  "ethnicity",
+  "nationality",
+  "passport",
+  "license",
+  "account",
+  "accountNumber",
+  "routing",
+  "routingNumber",
+  "iban",
+  "swift",
+  "privateKey",
+  "certificate",
+  "signature"
+];
