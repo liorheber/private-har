@@ -32,6 +32,17 @@ const SENSITIVE_CONTENT_TYPES = [
   'application/xml',
 ];
 
+// Content types that can be summarized
+const SUMMARIZABLE_CONTENT_TYPES = [
+  'application/json',
+  'application/ld+json',
+  'text/json',
+  'application/problem+json'
+];
+
+// Maximum size in bytes for content to be summarized (3000 tokens * 4 bytes per token)
+const MAX_SUMMARIZABLE_SIZE = 3000 * 4;
+
 function isContentTypeSensitive(contentType) {
   if (!contentType) return false;
   const lowerContentType = contentType.toLowerCase();
@@ -47,6 +58,20 @@ function isContentTypeSensitive(contentType) {
   }
 
   return false;
+}
+
+// Check if content type is JSON-like and can be summarized
+function isSummarizableContentType(contentType) {
+  if (!contentType) return false;
+  const lowerContentType = contentType.toLowerCase();
+  return SUMMARIZABLE_CONTENT_TYPES.some(type => lowerContentType.includes(type));
+}
+
+// Check if content is too large to summarize
+function isContentTooLarge(content) {
+  if (!content) return false;
+  // Use TextEncoder to get accurate byte length of UTF-8 string
+  return new TextEncoder().encode(content).length > MAX_SUMMARIZABLE_SIZE;
 }
 
 // Worker log function
@@ -197,58 +222,102 @@ function isApiCall(entry) {
 async function summarizeEntry(entry, hasAI) {
   if (!hasAI) return entry;
   
-  // Only summarize API calls
   if (!isApiCall(entry)) {
     workerLog(`Skipping non-API call: ${entry.request.url}`);
+    return entry;
+  }
+
+  // Check if response content type is summarizable
+  const contentType = entry.response.content?.mimeType;
+  if (!isSummarizableContentType(contentType)) {
+    workerLog(`Skipping non-JSON content type: ${contentType}`);
     return entry;
   }
   
   workerLog(`Summarizing API call: ${entry.request.url}`);
   
   try {
-    // Build context for summarization
-    let content = `${entry.request.method} request to ${entry.request.url}`;
+    // Build base context that will be included in all requests
+    const baseContext = `<method>${entry.request.method}</method>
+    <url>${entry.request.url}</url>`;
     
-    // Include request body if present
+    let requestContent = '';
+    let responseContent = '';
+    let finalSummary = '';
+    
+    // Process request body if present
     if (entry.request.postData?.text) {
       try {
         const jsonData = JSON.parse(entry.request.postData.text);
-        content += `\nRequest body: ${JSON.stringify(jsonData, null, 2)}`;
+        requestContent = `<requestBody>${JSON.stringify(jsonData, null, 2)}</requestBody>`;
       } catch {
-        content += `\nRequest body: ${entry.request.postData.text}`;
+        requestContent = `<requestBody>${entry.request.postData.text}</requestBody>`;
       }
     }
     
-    // Include response body
+    // Process response body
     if (entry.response.content?.text) {
       try {
         const jsonData = JSON.parse(entry.response.content.text);
-        content += `\nResponse body: ${JSON.stringify(jsonData, null, 2)}`;
+        responseContent = `<responseBody>${JSON.stringify(jsonData, null, 2)}</responseBody>`;
       } catch {
-        content += `\nResponse body: ${entry.response.content.text}`;
+        responseContent = `<responseBody>${entry.response.content.text}</responseBody>`;
       }
     }
-        
+
     // Create summarizer with shared context
     const summarizer = await self.ai.summarizer.create({
-      sharedContext: "Summarize an http call explaining what it is the call is doing based on the request and response body when it's available.",
-      type: "key-points",
-      format: "markdown",
-      length: "short"
+      sharedContext: `
+      <goal>Summarize the API call attached under the <request> tag.</goal>
+      <rules>
+        <rule>Based on the API path and method, try to derive the purpose of the request.</rule>
+        <rule>Based on the request body, try to derive the parameters of the request.</rule>
+        <rule>Based on the response body, try to derive the result of the request.</rule>
+      </rules>
+      `,
     });
+
+    const fullContent = `${baseContext}\n${requestContent}\n${responseContent}`;
     
-    // Generate summary with specific context
-    const summary = await summarizer.summarize(content);
+    // Check if full content is small enough to process at once
+    if (!isContentTooLarge(fullContent)) {
+      const summary = await summarizer.summarize(fullContent);
+      finalSummary = summary;
+    } else {
+      // Split processing based on content size
+      let summaries = [];
+      
+      // Process request if present and not too large
+      if (requestContent && !isContentTooLarge(requestContent)) {
+        const requestOnlyContent = `<notification>this is a partial request, summarize only based on the content you have</notification>\n${baseContext}\n${requestContent}`;
+        const requestSummary = await summarizer.summarize(requestOnlyContent);
+        summaries.push(requestSummary);
+      } else if (requestContent) {
+        summaries.push('Request body was too large to process');
+      }
+      
+      // Process response if present and not too large
+      if (responseContent && !isContentTooLarge(responseContent)) {
+        const responseOnlyContent = `<notification>this is a partial request, summarize only based on the content you have</notification>\n${baseContext}\n${responseContent}`;
+        const responseSummary = await summarizer.summarize(responseOnlyContent);
+        summaries.push(responseSummary);
+      } else if (responseContent) {
+        summaries.push('Response body was too large to process');
+      }
+      
+      // Combine summaries
+      finalSummary = summaries.join('\n');
+    }
     
-    entry.summary = summary.trim();
-    workerLog(`Generated summary for API call: ${entry.summary}`);
+    // Add summary to entry
+    entry.summary = finalSummary;
+    return entry;
+    
   } catch (error) {
-    workerLog(`Error generating summary: ${error.toString()}`);
-    workerLog('Error details:', error);
-    entry.summary = `Failed to generate summary: ${error.message}`;
+    workerLog('Error summarizing entry:', error);
+    entry.summary = 'Error generating summary';
+    return entry;
   }
-  
-  return entry;
 }
 
 // Smart scrub entry using AI features if available
@@ -297,6 +366,7 @@ function shouldScrubContent(entry) {
     'font/',
     'audio/',
     'video/',
+    'text/html',
     '.css',
     '.js',
     '.png',
@@ -403,7 +473,7 @@ async function processHarData(harData) {
     const hasAI = 'ai' in self && 'summarizer' in self.ai;
     workerLog(`AI features available: ${hasAI}`);
 
-    const CONCURRENT_LIMIT = 5;
+    const CONCURRENT_LIMIT = 4;
     const entries = [...harData.log.entries];
     const results = new Array(totalEntries);
     let currentIndex = 0;
