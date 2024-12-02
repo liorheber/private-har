@@ -11,15 +11,16 @@ interface LogEntry {
 }
 
 export default function Home() {
-  const [harData, setHarData] = useState<any>(null);
+  const [entries, setEntries] = useState<any[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [harInfo, setHarInfo] = useState<any>(null);
 
   useEffect(() => {
-    const featureCheckWorker = new Worker('/scrubber-worker.js');
+    const featureCheckWorker = new Worker(`/scrubber-worker.js?v=${Date.now()}`);
     
     featureCheckWorker.onmessage = (e) => {
       if (e.data.type === 'featureCheck' && !e.data.hasFeatures) {
@@ -44,14 +45,17 @@ export default function Home() {
 
     setIsProcessing(true);
     setError(null);
-    setHarData(null);
+    setEntries([]);
     setProgress(null);
     setLogs([]);
+    setHarInfo(null);
 
     try {
-      const worker = new Worker('/scrubber-worker.js');
+      const worker = new Worker(`/scrubber-worker.js?v=${Date.now()}`);
       
       worker.onmessage = (e) => {
+        console.log('Worker message received:', e.data);
+        
         if (e.data.type === 'init') {
           setProgress({ current: 0, total: e.data.totalEntries });
         } else if (e.data.type === 'progress') {
@@ -62,8 +66,14 @@ export default function Home() {
             message: e.data.message,
             data: e.data.data
           }]);
-        } else if (e.data.type === 'success') {
-          setHarData(e.data.data);
+        } else if (e.data.type === 'entry') {
+          // Add new entry as it arrives
+          setEntries(prevEntries => {
+            const newEntries = [...prevEntries];
+            newEntries[e.data.index] = e.data.entry;
+            return newEntries;
+          });
+        } else if (e.data.type === 'complete') {
           setIsProcessing(false);
           setProgress(null);
           worker.terminate();
@@ -83,7 +93,18 @@ export default function Home() {
       };
 
       const text = await file.text();
-      worker.postMessage({ type: 'processHar', harContent: text });
+      const harData = JSON.parse(text);
+      setHarInfo({
+        version: harData.log.version,
+        creator: harData.log.creator,
+        browser: harData.log.browser,
+        pages: harData.log.pages
+      });
+      
+      worker.postMessage({ 
+        type: 'processHar',
+        harContent: text
+      });
     } catch (err: any) {
       setError(err.message);
       setIsProcessing(false);
@@ -103,7 +124,7 @@ export default function Home() {
 
         <div className="text-center">
           <label className="inline-block px-6 py-3 bg-blue-500 text-white rounded-lg cursor-pointer hover:bg-blue-600 transition-colors">
-            {harData ? 'Upload Different File' : 'Choose HAR File'}
+            {entries.length > 0 ? 'Upload Different File' : 'Choose HAR File'}
             <input
               type="file"
               accept=".har"
@@ -149,12 +170,12 @@ export default function Home() {
           </div>
         )}
 
-        {harData && !isProcessing && (
+        {entries.length > 0 && !isProcessing && harInfo && (
           <ViewerContainer
-            entries={harData.log.entries}
+            entries={entries}
             logs={logs}
-            totalSize={harData.log.entries.reduce((sum: number, entry: any) => sum + entry.response.content.size, 0)}
-            totalTime={harData.log.entries.reduce((sum: number, entry: any) => sum + entry.time, 0)}
+            totalSize={entries.reduce((sum: number, entry: any) => sum + (entry?.response?.content?.size || 0), 0)}
+            totalTime={entries.reduce((sum: number, entry: any) => sum + (entry?.time || 0), 0)}
           />
         )}
       </div>

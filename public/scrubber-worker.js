@@ -117,6 +117,278 @@ function processSensitiveData(obj, path = '', contentType = null, url = '') {
   return obj;
 }
 
+// Check if an entry is an API call that should be summarized
+function isApiCall(entry) {
+  const { request, response } = entry;
+  
+  // Non-GET methods are likely API calls
+  if (request.method !== 'GET') {
+    return true;
+  }
+  
+  // Check response content type
+  const contentType = response?.content?.mimeType?.toLowerCase() || '';
+  
+  // Skip static assets
+  const staticAssetPatterns = [
+    'text/css',
+    'text/javascript',
+    'application/javascript',
+    'image/',
+    'font/',
+    'audio/',
+    'video/',
+    'text/html',
+    '.css',
+    '.js',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.svg',
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.eot'
+  ];
+  
+  if (staticAssetPatterns.some(pattern => 
+    contentType.includes(pattern) || request.url.toLowerCase().includes(pattern)
+  )) {
+    return false;
+  }
+  
+  // Look for API indicators in URL
+  const apiUrlPatterns = [
+    '/api/',
+    '/graphql',
+    '/v1/',
+    '/v2/',
+    '/rest/',
+    'service',
+    '/data/',
+    '.json'
+  ];
+  
+  const url = request.url.toLowerCase();
+  if (apiUrlPatterns.some(pattern => url.includes(pattern))) {
+    return true;
+  }
+  
+  // Check if response is JSON
+  if (contentType.includes('application/json')) {
+    return true;
+  }
+  
+  // Check if request accepts JSON
+  const acceptsJson = request.headers.some(header => 
+    header.name.toLowerCase() === 'accept' && 
+    header.value.toLowerCase().includes('application/json')
+  );
+  
+  if (acceptsJson) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Add summary to an entry
+async function summarizeEntry(entry, hasAI) {
+  if (!hasAI) return entry;
+  
+  // Only summarize API calls
+  if (!isApiCall(entry)) {
+    workerLog(`Skipping non-API call: ${entry.request.url}`);
+    return entry;
+  }
+  
+  workerLog(`Summarizing API call: ${entry.request.url}`);
+  
+  try {
+    // Build context for summarization
+    let content = `${entry.request.method} request to ${entry.request.url}`;
+    
+    // Include request body if present
+    if (entry.request.postData?.text) {
+      try {
+        const jsonData = JSON.parse(entry.request.postData.text);
+        content += `\nRequest body: ${JSON.stringify(jsonData, null, 2)}`;
+      } catch {
+        content += `\nRequest body: ${entry.request.postData.text}`;
+      }
+    }
+    
+    // Include response body
+    if (entry.response.content?.text) {
+      try {
+        const jsonData = JSON.parse(entry.response.content.text);
+        content += `\nResponse body: ${JSON.stringify(jsonData, null, 2)}`;
+      } catch {
+        content += `\nResponse body: ${entry.response.content.text}`;
+      }
+    }
+    
+    workerLog('Content for summarization:', content);
+    
+    // Create summarizer with shared context
+    const summarizer = await self.ai.summarizer.create({
+      sharedContext: "JSON API request from HAR file",
+      type: "headline",
+      length: "short"
+    });
+    
+    // Generate summary with specific context
+    const summary = await summarizer.summarize(content, {
+      context: `HTTP ${entry.request.method} API call made at ${entry.startedDateTime} with ${entry.response.status} response status`
+    });
+    
+    entry.summary = summary.trim();
+    workerLog(`Generated summary for API call: ${entry.summary}`);
+  } catch (error) {
+    workerLog(`Error generating summary: ${error.toString()}`);
+    workerLog('Error details:', error);
+    entry.summary = `Failed to generate summary: ${error.message}`;
+  }
+  
+  return entry;
+}
+
+// Smart scrub entry using AI features if available
+async function smartScrubEntry(entry, hasAI) {
+  if (!hasAI) return entry;
+  
+  workerLog(`Smart scrubbing entry: ${entry.request.url}`);
+  // TODO: Implement AI-powered smart scrubbing
+  return entry;
+}
+
+// Process a single entry through the pipeline
+async function processEntryThroughPipeline(entry, hasAI) {
+  workerLog(`Starting pipeline for ${entry.request.url} with AI: ${hasAI}`);
+  
+  // Step 1: Summarize
+  entry = await summarizeEntry(entry, hasAI);
+  
+  // Step 2: Smart scrub
+  entry = await smartScrubEntry(entry, hasAI);
+  
+  // Step 3: Basic scrub
+  if (entry.request) {
+    entry.request = processSensitiveData(entry.request, 'request', null, entry.request.url);
+  }
+  
+  if (entry.response) {
+    const contentType = entry.response.content?.mimeType;
+    entry.response = processSensitiveData(entry.response, 'response', contentType);
+  }
+  
+  return entry;
+}
+
+// Check if content should be scrubbed
+function shouldScrubContent(entry) {
+  const { request, response } = entry;
+  const contentType = response?.content?.mimeType?.toLowerCase() || '';
+  
+  // Static assets that should not be scrubbed
+  const preserveContentTypes = [
+    'text/css',
+    'text/javascript',
+    'application/javascript',
+    'image/',
+    'font/',
+    'audio/',
+    'video/',
+    '.css',
+    '.js',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.svg',
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.eot'
+  ];
+  
+  // Don't scrub if it's a static asset
+  if (preserveContentTypes.some(pattern => 
+    contentType.includes(pattern) || request.url.toLowerCase().includes(pattern)
+  )) {
+    return false;
+  }
+  
+  // Scrub HTML and API responses
+  return contentType.includes('text/html') || isApiCall(entry);
+}
+
+// Basic scrub of an entry
+function basicScrubEntry(entry) {
+  try {
+    // Deep clone to avoid modifying original
+    entry = JSON.parse(JSON.stringify(entry));
+    
+    // Always scrub cookies and auth headers
+    entry.request.cookies = [];
+    entry.response.cookies = [];
+    
+    entry.request.headers = entry.request.headers.filter(header => {
+      const name = header.name.toLowerCase();
+      return !name.includes('cookie') && 
+             !name.includes('auth') && 
+             !name.includes('token') &&
+             !name.includes('key');
+    });
+    
+    entry.response.headers = entry.response.headers.filter(header => {
+      const name = header.name.toLowerCase();
+      return !name.includes('cookie') && 
+             !name.includes('auth') && 
+             !name.includes('token') &&
+             !name.includes('key');
+    });
+
+    // Only scrub content if needed
+    if (shouldScrubContent(entry)) {
+      // Scrub request content
+      if (entry.request.postData?.text) {
+        try {
+          const postData = JSON.parse(entry.request.postData.text);
+          entry.request.postData.text = JSON.stringify(scrubObject(postData));
+        } catch {
+          // If not JSON, apply basic scrubbing patterns
+          entry.request.postData.text = scrubText(entry.request.postData.text);
+        }
+      }
+      
+      // Scrub response content
+      if (entry.response.content?.text) {
+        const contentType = entry.response.content.mimeType?.toLowerCase() || '';
+        
+        if (contentType.includes('application/json')) {
+          try {
+            const content = JSON.parse(entry.response.content.text);
+            entry.response.content.text = JSON.stringify(scrubObject(content));
+          } catch {
+            entry.response.content.text = scrubText(entry.response.content.text);
+          }
+        } else if (contentType.includes('text/html')) {
+          entry.response.content.text = scrubText(entry.response.content.text);
+        }
+      }
+    } else {
+      workerLog(`Preserving content for non-scrubbed type: ${entry.request.url}`);
+    }
+    
+    return entry;
+  } catch (error) {
+    workerLog('Error in basicScrubEntry:', error);
+    return entry;
+  }
+}
+
 // Process HAR data
 async function processHarData(harData) {
   try {
@@ -130,41 +402,47 @@ async function processHarData(harData) {
     self.postMessage({ type: 'init', totalEntries });
     workerLog(`Found ${totalEntries} entries to process`);
 
-    const processedEntries = [];
-    for (let i = 0; i < harData.log.entries.length; i++) {
-      const entry = harData.log.entries[i];
-      
-      // Process request
-      if (entry.request) {
-        workerLog(`Processing request: ${entry.request.url}`);
-        entry.request = processSensitiveData(entry.request, 'request', null, entry.request.url);
-      }
-      
-      // Process response
-      if (entry.response) {
-        const contentType = entry.response.content?.mimeType;
-        workerLog(`Processing response with content type: ${contentType || 'unknown'}`);
-        entry.response = processSensitiveData(entry.response, 'response', contentType);
-      }
+    // Check for AI features
+    const hasAI = 'ai' in self && 'summarizer' in self.ai;
+    workerLog(`AI features available: ${hasAI}`);
 
-      processedEntries.push(entry);
-      self.postMessage({ type: 'progress', current: i + 1, total: totalEntries });
+    // Process entries one by one and send updates
+    for (let i = 0; i < harData.log.entries.length; i++) {
+      let entry = harData.log.entries[i];
+      
+      // Process through pipeline
+      entry = await processEntryThroughPipeline(entry, hasAI);
+      
+      // Send the processed entry immediately
+      self.postMessage({ 
+        type: 'entry',
+        entry,
+        index: i,
+        total: totalEntries
+      });
+      
+      // Also send progress update
+      self.postMessage({ 
+        type: 'progress', 
+        current: i + 1, 
+        total: totalEntries 
+      });
     }
 
+    // Send completion message
+    self.postMessage({ 
+      type: 'complete',
+      message: 'All entries processed'
+    });
+    
     workerLog('Completed HAR file processing');
 
-    return {
-      log: {
-        version: harData.log.version,
-        creator: harData.log.creator,
-        browser: harData.log.browser,
-        pages: harData.log.pages,
-        entries: processedEntries
-      }
-    };
   } catch (error) {
     workerLog(`Error: ${error.message}`);
-    throw error;
+    self.postMessage({ 
+      type: 'error',
+      message: error.message
+    });
   }
 }
 

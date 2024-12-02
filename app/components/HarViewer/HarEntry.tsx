@@ -7,6 +7,7 @@ interface HarEntryProps {
   entry: {
     startedDateTime: string;
     time: number;
+    summary?: string;
     request: {
       method: string;
       url: string;
@@ -94,6 +95,14 @@ export default function HarEntry({ entry, index }: HarEntryProps) {
       {isExpanded && (
         <div className="border-t border-gray-200 p-4">
           <div className="space-y-6">
+            {/* Summary */}
+            {entry.summary && (
+              <section>
+                <h3 className="text-lg font-medium mb-2">Summary</h3>
+                <p className="text-sm text-gray-700">{entry.summary}</p>
+              </section>
+            )}
+
             {/* General Info */}
             <section>
               <h3 className="text-lg font-medium mb-2">General</h3>
